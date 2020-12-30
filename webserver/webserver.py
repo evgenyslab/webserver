@@ -1,9 +1,9 @@
 import argparse
 import os
-import pkg_resources as p
+import random
 import http.server
 from bs4 import BeautifulSoup
-import urllib.request
+from urllib import request, error
 import socket
 import socketserver
 import warnings
@@ -166,12 +166,10 @@ class Webserver:
             # try this if HTTP
             if script['src'].startswith('http'):
                 try:
-                    # TODO: just check if page is available;
-                    page = urllib.request.urlopen(script['src'])
+                    page = request.urlopen(script['src'])
                     scriptRaw = page.read()
-                except:
-                    # couldn't fetch page
-                    pass
+                except error.URLError:
+                    warnings.warn("Could not reach {:}".format(script['src']))
             else:
                 # local file
                 if script['src'] in fileList:
@@ -191,18 +189,24 @@ class Webserver:
 
         :return:
         """
-        print("Starting web serving at: http://{:s}:{:d}\n\n".format(self.host,self.port))
-        # TODO: Handle error if port is not free!
-        self.server = socketserver.TCPServer(("", self.port), self.handler, bind_and_activate=False)
-        self.server.allow_reuse_address = True
-        try:
-            self.server.server_bind()
-            self.server.server_activate()
-        except:
-            self.server.server_close()
-            raise
+        bound = False
+        port = self.port
+        while not bound:
+            self.server = socketserver.TCPServer(("", port), self.handler, bind_and_activate=False)
+            self.server.allow_reuse_address = True
+            try:
+                self.server.server_bind()
+                self.server.server_activate()
+                bound = True
+            except OSError:
+                # could not bind; maybe, choose a random port then
+                if port == self.port:
+                    warnings.warn("Port {:} in use".format(self.port))
+                self.server.server_close()
+                port = random.randrange(9999, 13000)
 
         # Star the server
+        print("Starting web serving at: http://{:s}:{:d}\n\n".format(self.host, port))
         self.server.serve_forever()
 
 
