@@ -1,8 +1,12 @@
-import http.server
-import socketserver
-import threading
+import argparse
 import os
 import pkg_resources as p
+import http.server
+from bs4 import BeautifulSoup
+import urllib.request
+import socket
+import socketserver
+import warnings
 
 """
 Web Server python tool servers a directy
@@ -21,7 +25,41 @@ parameters and replace with kwards
 """
 
 
-def generate_handler(html):
+def checkExtension(file, extensions=()):
+    if len(extensions) == 0:
+        return True
+    else:
+        return file.endswith(extensions)
+
+
+def fileFinder(directory=[], extensions=(), walk=True):
+
+    if isinstance(directory, str):
+        directory = [directory]
+
+    files = []
+    paths = []
+    for k in directory:
+        if os.path.isfile(k) and checkExtension(k, extensions):
+            files.append(k)
+        elif os.path.isdir(k):
+            paths.append(k)
+
+    for k in paths:
+        if walk:
+            for dirpath, dirnames, filenames in os.walk(k):
+                for filename in filenames:
+                    if checkExtension(filename, extensions):
+                        files.append((dirpath, filename))
+        else:
+            for f in os.listdir(k):
+                if os.path.isfile(k + "/" + f) and checkExtension((k + "/" + f), extensions):
+                    files.append((k + "/", f))
+
+    return files
+
+
+def generateHandler(html):
     """
     Generates an http.server.BaseHTTPRequestHandler that is triggered on webrequest
 
@@ -37,10 +75,6 @@ def generate_handler(html):
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
                 self.wfile.write(html.encode())
-                for script in scripts:
-                    self.wfile.write("\n\n<script>".encode())
-                    self.wfile.write(script.encode())
-                    self.wfile.write("\n\n</script>".encode())
 
             else:
                 self.send_error(404)
@@ -48,7 +82,7 @@ def generate_handler(html):
     return MyHandler
 
 
-class webserver:
+class Webserver:
     """
 
     """
@@ -59,84 +93,98 @@ class webserver:
         @param port:
         """
 
-        #TODO: host in kwargs
-        #TODO: serveDirectory in kwargs
-        #TODO: self-contained async loop instead of thread maybe
-
         # DEFAULTS
         self.host = "0.0.0.0"
-
-        html, script = self.__getSources__(serveDirectory=serveDirectory)
-        self.__loadWebFiles__(html=html, script=script, commport=commport)
-        self.handler = generate_handler(self.html, scripts=[self.script])
-        self.host = host
-        self.port = port
+        self.sources = ""
+        self.port = 0
+        self.html = ""
         self.server = None
-        self.serving = False
-        self.serverThread = None
-        self.start()
 
-    def parseArgs(self, **kwargs):
-       pass 
+        self.sourceDirectory = ""
+        self.sourceIndexFile = ""
 
-    def __loadWebFiles__(self, html="", script="", commport=0):
-        assert(html != "")
-        assert(script != "")
-        assert(commport != 0)
-        with open(html, "r") as f:
-            self.html = f.read()
-        with open(script, "r") as f:
-            self.script = f.read()
-        # set requested communication port
-        self.script = self.script.replace("port: \"7777\"", "port: \"" + str(commport) + "\"")
-        # add local plotly & msgpack scripts:
-        scriptPlotly = p.resource_filename('webplot', 'web/plotly-latest.min.js')
-        scriptMsgpack = p.resource_filename('webplot', 'web/msgpack.min.js')
-        assert (os.path.isfile(scriptPlotly))
-        assert (os.path.isfile(scriptMsgpack))
-        with open(scriptPlotly, "r") as f:
-            scriptPlotlyRaw = f.read()
-        with open(scriptMsgpack, "r") as f:
-            scriptMsgpackRaw = f.read()
+        if 'sources' not in kwargs:
+            raise(ValueError, "Input not provided")
+        if not (os.path.isfile(kwargs['sources']) or os.path.isdir(kwargs['sources'])):
+            raise(ValueError, "Error: input is neither a file or a directory")
 
-        self.html = self.html + "\n\n" + \
-                                "<script>" + scriptMsgpackRaw + "</script>\n" + \
-                                "<script>" + scriptPlotlyRaw + "</script>\n"
+        if 'port' in kwargs:
+            self.port = kwargs['port']
+
+        if 'host' in kwargs:
+            # validate:
+            try:
+                socket.inet_aton(kwargs['host'])
+            except socket.error:
+                warnings.warn("Request Host at {:} is not available, reverting to default {:}".format(kwargs['host'],
+                                                                                                      self.host))
+
+        # parse sources:
+        # Single FILE:
+        if os.path.isfile(kwargs['sources']):
+            # validate is it html file:
+            if not kwargs['sources'].endswith('html'):
+                raise(ValueError, "input file {:} is not html".format(kwargs['sources']))
+            else:
+                self.sourceIndexFile = kwargs['sources']
+                self.sourceDirectory = '/'.join(self.sourceIndexFile.split('/')[:-1]) + '/'
+
+        # SERVE FOLDER
+        else:  # folder
+            self.sourceDirectory = kwargs['sources'] + '/' if kwargs['sources'][-1] != '/' else ''
+            self.sourceFiles = fileFinder(self.sourceDirectory)
+            # find index file:
+            fileList = [k[-1] for k in self.sourceFiles]
+            if fileList.count('index.html') == 0:
+                raise(ValueError, "No index.html file found in directory provided.")
+            elif fileList.count('index.html') > 1:
+                raise (ValueError, "More than one index.html file found in directory provided.")
+            else:
+                idx = fileList.index('index.html')
+                self.sourceIndexFile = ''.join(self.sourceFiles[idx])
+                # remove the file from source list:
+                self.sourceFiles.pop(idx)
+
+        self.parseIndexHTMLFile()
+        self.handler = generateHandler(self.html)
 
 
 
-    @staticmethod
-    def __getSources__(serveDirectory=""):
-        if serveDirectory != "":
-            htmlExternal = serveDirectory + ('/' if serveDirectory[-1] != '/' else '') + 'index.html'
-            scriptExternal = serveDirectory + ('/' if serveDirectory[-1] != '/' else '') + 'visualizer.js'
-            # check if it is a directory
-            if os.path.isdir(serveDirectory) and  os.path.isfile(htmlExternal) and  os.path.isfile(scriptExternal):
-                return htmlExternal, scriptExternal
-        else:
-            html = p.resource_filename('webplot', 'web/index.html')
-            script = p.resource_filename('webplot', 'web/visualizer.js')
-            assert(os.path.isfile(html))
-            assert(os.path.isfile(script))
-            return html, script
-
-    def stop(self):
+    def parseIndexHTMLFile(self):
         """
-
-        :return:
+        Read the sourceIndexFile
+        -> determine if it calls for scripts that need to be inserted & are available locally
+        -> determine if it calls for remote scripts (check if they can curl)
         """
-        self.server.shutdown()
-        self.serverThread.join()
-        print("Stopping web serving")
+        with open(self.sourceIndexFile, "r") as f:
+            doc = f.read()
+        soup = BeautifulSoup(doc, 'html.parser')
+        fileList = [k[-1] for k in self.sourceFiles]
+        scripts = soup.find_all('script')
+        # check each script...
+        for script in scripts:
+            # try this if HTTP
+            if script['src'].startswith('http'):
+                try:
+                    # TODO: just check if page is available;
+                    page = urllib.request.urlopen(script['src'])
+                    scriptRaw = page.read()
+                except:
+                    # couldn't fetch page
+                    pass
+            else:
+                # local file
+                if script['src'] in fileList:
+                    idx = fileList.index(script['src'])
+                    with open(''.join(self.sourceFiles[idx]), "r") as f:
+                        scriptRaw = f.read()
+                else:
+                    pass
+                script.string = scriptRaw  # raw js UTF-8
+                del(script['src'])  # remove tag
 
-    def start(self):
-        """
-
-        :return:
-        """
-        self.serverThread = threading.Thread(target=self.serve)
-        self.serverThread.start()
-        self.serving = True
+        # now, convert the soup back to byte-doc
+        self.html = str(soup)  # and serve it :)
 
     def serve(self):
         """
@@ -144,6 +192,7 @@ class webserver:
         :return:
         """
         print("Starting web serving at: http://{:s}:{:d}\n\n".format(self.host,self.port))
+        # TODO: Handle error if port is not free!
         self.server = socketserver.TCPServer(("", self.port), self.handler, bind_and_activate=False)
         self.server.allow_reuse_address = True
         try:
@@ -156,3 +205,31 @@ class webserver:
         # Star the server
         self.server.serve_forever()
 
+
+if __name__ == "__main__":
+    # input args needs to be an index.html file or directory
+    parser = argparse.ArgumentParser(description='Simple Web Server')
+
+    parser.add_argument("-i",
+                        dest="sources",
+                        required=True,
+                        help="Web Source Location")
+
+    parser.add_argument("--host",
+                        dest="hostAddress",
+                        default="0.0.0.0")
+
+    parser.add_argument("--port",
+                        dest="port",
+                        default="12345",
+                        type=int)
+
+    parser.add_argument('--version', action='version', version='%(prog)s 1.0')
+
+    args = parser.parse_args()
+
+    # args.default should be an index.html
+    server = Webserver(sources=args.sources,
+                       host=args.hostAddress,
+                       port=args.port)
+    server.serve()
